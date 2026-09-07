@@ -297,9 +297,41 @@
   .icon-btn {
     border: none; background: none; cursor: pointer; color: var(--ink-soft);
     font-size: 12.5px; padding: 2px 6px; font-family: "Noto Sans KR", sans-serif;
+    white-space: nowrap;
   }
   .icon-btn:hover { color: var(--safety); }
   .icon-btn.edit:hover { color: var(--ok); }
+  .icon-btn.log:hover { color: var(--navy-line); }
+
+  .tag-remote {
+    display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 10px;
+    color: var(--navy-line); border: 1px solid var(--navy-line); padding: 1px 6px;
+    margin-left: 6px; vertical-align: middle;
+  }
+  .due-date.overdue { color: var(--safety); font-weight: 600; }
+
+  .log-row td { padding: 0; border-bottom: 1px solid var(--line); background: var(--paper-dim); }
+  .log-panel { padding: 14px 16px; }
+  .log-entry {
+    display: grid; grid-template-columns: 90px 1fr auto; gap: 12px; align-items: start;
+    padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px;
+  }
+  .log-entry:last-of-type { border-bottom: none; }
+  .log-date { font-family: "IBM Plex Mono", monospace; color: var(--ink-soft); }
+  .log-memo { color: var(--ink); line-height: 1.5; white-space: pre-wrap; }
+  .log-empty { font-size: 12.5px; color: var(--ink-soft); padding: 4px 0 12px; }
+  .log-add {
+    display: flex; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+  }
+  .log-add input[type="date"] { width: 130px; flex-shrink: 0; }
+  .log-add input[type="text"] { flex: 1; }
+  .log-add input {
+    padding: 7px 9px; border: 1px solid var(--line); background: #fff;
+    font-family: "Noto Sans KR", sans-serif; font-size: 12.5px; color: var(--ink);
+  }
+  .log-add input:focus { outline: none; border-color: var(--navy-line); }
+
+  .field.hide { display: none; }
 
   /* mobile */
   @media (max-width: 760px) {
@@ -387,6 +419,13 @@
             <input type="text" id="fName" placeholder="예: 한빛물산" />
           </div>
           <div class="field">
+            <label>점검 방식</label>
+            <select id="fVisitType">
+              <option value="onsite">방문</option>
+              <option value="remote">원격</option>
+            </select>
+          </div>
+          <div class="field">
             <label>점검 주기</label>
             <select id="fCycle">
               <option value="1">월간</option>
@@ -394,12 +433,20 @@
               <option value="6">반기</option>
             </select>
           </div>
+
           <div class="field">
             <label>마지막 점검일</label>
             <input type="date" id="fLast" />
           </div>
+          <div class="field" style="grid-column: span 2;">
+            <label>다음 점검일 <span style="font-weight:400;">(직접 지정 가능)</span></label>
+            <div class="row">
+              <input type="date" id="fNext" />
+              <button class="btn-outline" id="autoNextBtn" type="button">자동 계산</button>
+            </div>
+          </div>
 
-          <div class="field full">
+          <div class="field full" id="addrField">
             <label>주소</label>
             <div class="row">
               <input type="text" id="fAddr" placeholder="예: 서울시 강남구 테헤란로 123" />
@@ -411,6 +458,10 @@
             <div class="preview-status" id="previewStatus"></div>
             <div id="previewMap"></div>
             <div class="preview-hint">핀을 드래그하면 위치를 조정할 수 있어요</div>
+          </div>
+
+          <div class="field full" id="remoteNote" style="display:none;">
+            <div class="preview-hint" style="margin-top:0;">원격 점검은 위치 등록이 필요 없어요.</div>
           </div>
 
           <div class="form-actions">
@@ -561,6 +612,11 @@
   function fmtDate(d) {
     return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
   }
+  function toInputDate(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  function todayInput() { return toInputDate(new Date()); }
+  function startOfToday() { const d = new Date(); d.setHours(0,0,0,0); return d; }
 
   // ---------- geocoding with fallback ----------
   function geocodeKakaoOnce(q) {
@@ -640,7 +696,7 @@
       const marker = L.circleMarker([c.lat, c.lng], {
         radius: 8, color: '#fff', weight: 2, fillColor: CYCLE_COLOR[c.cycle], fillOpacity: 1,
       }).addTo(markersLayer);
-      const due = fmtDate(nextDueDate(c.lastInspection, c.cycle));
+      const due = fmtDate(new Date(c.nextInspection));
       marker.bindPopup(`<b>${escapeHtml(c.name)}</b><br>${escapeHtml(c.address)}<br>${CYCLE_LABEL[c.cycle]} 점검 · 다음: ${due}`);
     });
     if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
@@ -701,11 +757,44 @@
     $('#submitBtn').disabled = false;
   });
 
+  // ---------- visit type toggle (방문 / 원격) ----------
+  function applyVisitTypeUI() {
+    const isRemote = $('#fVisitType').value === 'remote';
+    $('#addrField').classList.toggle('hide', isRemote);
+    $('#remoteNote').style.display = isRemote ? 'block' : 'none';
+    if (isRemote) {
+      $('#previewWrap').classList.remove('show');
+      previewCoords = 'remote'; // 원격은 위치 확인 없이 제출 가능하도록 표시값 설정
+    } else if (previewCoords === 'remote') {
+      previewCoords = null;
+    }
+    updateSubmitEnabled();
+  }
+  $('#fVisitType').addEventListener('change', applyVisitTypeUI);
+
+  function updateSubmitEnabled() {
+    const isRemote = $('#fVisitType').value === 'remote';
+    $('#submitBtn').disabled = isRemote ? false : !previewCoords;
+  }
+
+  // ---------- next inspection date: auto-suggest unless manually edited ----------
+  let nextManualEdit = false;
+  function suggestNextDate() {
+    const last = $('#fLast').value;
+    if (!last) return;
+    const d = nextDueDate(last, parseInt($('#fCycle').value, 10));
+    $('#fNext').value = toInputDate(d);
+  }
+  $('#fLast').addEventListener('input', () => { if (!nextManualEdit) suggestNextDate(); });
+  $('#fCycle').addEventListener('change', () => { if (!nextManualEdit) suggestNextDate(); });
+  $('#fNext').addEventListener('input', () => { nextManualEdit = true; });
+  $('#autoNextBtn').addEventListener('click', () => { nextManualEdit = false; suggestNextDate(); });
+
   // ---------- month panel ----------
   function renderMonth() {
     $('#monthLabel').textContent = `${viewYear}년 ${viewMonth + 1}월`;
     const due = clients
-      .filter((c) => isDueInMonth(c.lastInspection, c.cycle, viewYear, viewMonth))
+      .filter((c) => isDueInMonth(c.nextInspection, c.cycle, viewYear, viewMonth))
       .sort((a, b) => a.name.localeCompare(b.name));
     $('#monthMeta').textContent = `${due.length} DUE`;
 
@@ -715,13 +804,14 @@
       return;
     }
     list.innerHTML = due.map((c) => {
-      const d = nextDueDate(c.lastInspection, c.cycle, new Date(viewYear, viewMonth, 1));
+      const d = nextDueDate(c.nextInspection, c.cycle, new Date(viewYear, viewMonth, 1));
+      const locLabel = c.visitType === 'remote' ? '원격 점검' : escapeHtml(c.address);
       return `
       <div class="visit-row">
-        <div class="name">${escapeHtml(c.name)}</div>
+        <div class="name">${escapeHtml(c.name)}${c.visitType === 'remote' ? '<span class="tag-remote">원격</span>' : ''}</div>
         <span class="badge ${CYCLE_CLASS[c.cycle]}">${CYCLE_LABEL[c.cycle]}</span>
         <span class="due-date">${fmtDate(d)}</span>
-        <div class="addr">${escapeHtml(c.address)}</div>
+        <div class="addr">${locLabel}</div>
       </div>`;
     }).join('');
   }
@@ -729,6 +819,30 @@
   $('#nextMonth').addEventListener('click', () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderMonth(); });
 
   // ---------- manage panel ----------
+  let expandedLogs = new Set();
+
+  function renderLogRow(c) {
+    const logs = (c.logs || []).slice().sort((a, b) => b.date.localeCompare(a.date));
+    return `
+    <tr class="log-row" data-log-for="${c.id}">
+      <td colspan="5">
+        <div class="log-panel">
+          ${logs.length ? logs.map((l) => `
+            <div class="log-entry">
+              <span class="log-date">${fmtDate(new Date(l.date))}</span>
+              <span class="log-memo">${escapeHtml(l.memo || '(메모 없음)')}</span>
+              <button class="icon-btn" data-log-action="delete" data-log-id="${l.id}">삭제</button>
+            </div>`).join('') : '<div class="log-empty">아직 점검 기록이 없어요.</div>'}
+          <div class="log-add">
+            <input type="date" class="log-add-date" value="${todayInput()}" />
+            <input type="text" class="log-add-memo" placeholder="메모 (예: 필터 교체, 이상 없음 등)" />
+            <button class="btn-outline" data-log-action="add" type="button">기록 추가</button>
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  }
+
   function renderTable() {
     const body = $('#clientTableBody');
     if (!clients.length) {
@@ -739,26 +853,60 @@
     }
     $('#manageMeta').textContent = `${clients.length} RECORDS`;
     $('#sidebarFoot').textContent = `${clients.length}개 고객사 등록됨`;
+    const today = startOfToday();
     body.innerHTML = clients.slice().sort((a, b) => a.name.localeCompare(b.name)).map((c) => {
-      const due = fmtDate(nextDueDate(c.lastInspection, c.cycle));
-      return `
+      const nextDate = new Date(c.nextInspection);
+      const overdue = nextDate < today;
+      const logCount = (c.logs || []).length;
+      const addrLine = c.visitType === 'remote'
+        ? '원격 점검'
+        : `${escapeHtml(c.address)}${c.lat == null ? ' (위치 미확인)' : ''}`;
+      const mainRow = `
       <tr data-id="${c.id}">
         <td>
-          <div class="row-name">${escapeHtml(c.name)}</div>
-          <div class="row-addr">${escapeHtml(c.address)}${c.lat == null ? ' (위치 미확인)' : ''}</div>
+          <div class="row-name">${escapeHtml(c.name)}${c.visitType === 'remote' ? '<span class="tag-remote">원격</span>' : ''}</div>
+          <div class="row-addr">${addrLine}</div>
         </td>
         <td><span class="badge ${CYCLE_CLASS[c.cycle]}">${CYCLE_LABEL[c.cycle]}</span></td>
         <td>${fmtDate(new Date(c.lastInspection))}</td>
-        <td>${due}</td>
+        <td><span class="due-date${overdue ? ' overdue' : ''}">${fmtDate(nextDate)}</span></td>
         <td>
+          <button class="icon-btn log" data-action="log">기록${logCount ? ` (${logCount})` : ''}</button>
           <button class="icon-btn edit" data-action="edit">수정</button>
           <button class="icon-btn" data-action="delete">삭제</button>
         </td>
       </tr>`;
+      return mainRow + (expandedLogs.has(c.id) ? renderLogRow(c) : '');
     }).join('');
   }
 
-  $('#clientTableBody').addEventListener('click', (e) => {
+  $('#clientTableBody').addEventListener('click', async (e) => {
+    // 점검 기록 추가/삭제
+    const logBtn = e.target.closest('button[data-log-action]');
+    if (logBtn) {
+      const logRow = e.target.closest('tr[data-log-for]');
+      const id = logRow.dataset.logFor;
+      const c = clients.find((c) => c.id === id);
+      if (!c) return;
+      if (logBtn.dataset.logAction === 'add') {
+        const panel = logRow.querySelector('.log-panel');
+        const date = panel.querySelector('.log-add-date').value;
+        const memo = panel.querySelector('.log-add-memo').value.trim();
+        if (!date) { alert('날짜를 선택해 주세요.'); return; }
+        c.logs = c.logs || [];
+        c.logs.push({ id: 'l_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), date, memo });
+        await saveClients();
+        renderTable();
+      } else if (logBtn.dataset.logAction === 'delete') {
+        const logId = logBtn.dataset.logId;
+        c.logs = (c.logs || []).filter((l) => l.id !== logId);
+        await saveClients();
+        renderTable();
+      }
+      return;
+    }
+
+    // 일반 액션 (기록 펼치기/수정/삭제)
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
     const tr = e.target.closest('tr');
@@ -766,10 +914,14 @@
     if (btn.dataset.action === 'delete') {
       if (confirm('이 고객사를 삭제할까요?')) {
         clients = clients.filter((c) => c.id !== id);
+        expandedLogs.delete(id);
         saveClients(); renderAll();
       }
     } else if (btn.dataset.action === 'edit') {
       startEdit(id);
+    } else if (btn.dataset.action === 'log') {
+      if (expandedLogs.has(id)) expandedLogs.delete(id); else expandedLogs.add(id);
+      renderTable();
     }
   });
 
@@ -778,65 +930,86 @@
     if (!c) return;
     editingId = id;
     $('#fName').value = c.name;
-    $('#fAddr').value = c.address;
+    $('#fVisitType').value = c.visitType || 'onsite';
+    $('#fAddr').value = c.address || '';
     $('#fCycle').value = c.cycle;
     $('#fLast').value = c.lastInspection;
+    $('#fNext').value = c.nextInspection || '';
+    nextManualEdit = true; // 기존 값 보존 (필드를 직접 건드리기 전까진 자동계산으로 덮어쓰지 않음)
     $('#formTitle').textContent = '고객사 수정';
     $('#submitBtn').textContent = '수정 완료';
     $('#cancelEditBtn').style.display = 'inline-block';
 
-    if (c.lat != null && c.lng != null) {
+    if (c.visitType === 'remote') {
+      previewCoords = 'remote';
+      $('#previewWrap').classList.remove('show');
+    } else if (c.lat != null && c.lng != null) {
       previewCoords = { lat: c.lat, lng: c.lng };
       $('#previewWrap').classList.add('show');
       $('#previewStatus').textContent = '등록된 위치입니다. 필요하면 핀을 옮겨 조정하세요.';
       $('#previewStatus').className = 'preview-status ok';
       setTimeout(() => ensurePreviewMap(c.lat, c.lng), 30);
-      $('#submitBtn').disabled = false;
     } else {
       previewCoords = null;
       $('#previewWrap').classList.remove('show');
-      $('#submitBtn').disabled = true;
     }
+    applyVisitTypeUI();
     $('#panel-manage').scrollIntoView({ behavior: 'smooth' });
   }
 
   function resetForm() {
     editingId = null;
-    $('#fName').value = ''; $('#fAddr').value = ''; $('#fCycle').value = '1'; $('#fLast').value = '';
+    $('#fName').value = ''; $('#fAddr').value = ''; $('#fCycle').value = '1';
+    $('#fLast').value = ''; $('#fNext').value = ''; $('#fVisitType').value = 'onsite';
+    nextManualEdit = false;
     $('#formTitle').textContent = '고객사 추가';
     $('#submitBtn').textContent = '추가하기';
-    $('#submitBtn').disabled = true;
     $('#cancelEditBtn').style.display = 'none';
     $('#formMsg').textContent = ''; $('#formMsg').classList.remove('error');
     $('#previewWrap').classList.remove('show');
     $('#findLocBtn').textContent = '위치 확인';
     previewCoords = null;
+    applyVisitTypeUI();
   }
   $('#cancelEditBtn').addEventListener('click', resetForm);
 
   $('#submitBtn').addEventListener('click', async () => {
     const name = $('#fName').value.trim();
+    const visitType = $('#fVisitType').value;
     const address = $('#fAddr').value.trim();
     const cycle = parseInt($('#fCycle').value, 10);
     const last = $('#fLast').value;
+    let next = $('#fNext').value;
     const msg = $('#formMsg');
 
-    if (!name || !address || !last || !previewCoords) {
-      msg.textContent = '고객사명, 주소, 마지막 점검일을 입력하고 위치를 확인해 주세요.';
+    if (!next && last) { next = toInputDate(nextDueDate(last, cycle)); $('#fNext').value = next; }
+
+    if (!name || !last || !next) {
+      msg.textContent = '고객사명, 마지막 점검일, 다음 점검일을 입력해 주세요.';
+      msg.classList.add('error');
+      return;
+    }
+    if (visitType === 'onsite' && (!address || !previewCoords || previewCoords === 'remote')) {
+      msg.textContent = '방문 점검은 주소를 입력하고 위치를 확인해 주세요.';
       msg.classList.add('error');
       return;
     }
     msg.textContent = ''; msg.classList.remove('error');
 
+    const coords = (visitType === 'onsite' && previewCoords && previewCoords !== 'remote') ? previewCoords : null;
+
     if (editingId) {
       const c = clients.find((c) => c.id === editingId);
-      c.name = name; c.address = address; c.cycle = cycle; c.lastInspection = last;
-      c.lat = previewCoords.lat; c.lng = previewCoords.lng;
+      c.name = name; c.visitType = visitType; c.address = visitType === 'remote' ? '' : address;
+      c.cycle = cycle; c.lastInspection = last; c.nextInspection = next;
+      c.lat = coords ? coords.lat : null; c.lng = coords ? coords.lng : null;
     } else {
       clients.push({
         id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-        name, address, cycle, lastInspection: last,
-        lat: previewCoords.lat, lng: previewCoords.lng,
+        name, visitType, address: visitType === 'remote' ? '' : address,
+        cycle, lastInspection: last, nextInspection: next,
+        lat: coords ? coords.lat : null, lng: coords ? coords.lng : null,
+        logs: [],
       });
     }
     await saveClients();
@@ -851,6 +1024,12 @@
   (async function init() {
     initMap();
     await loadClients();
+    clients.forEach((c) => {
+      if (!c.nextInspection) c.nextInspection = toInputDate(nextDueDate(c.lastInspection, c.cycle));
+      if (!c.visitType) c.visitType = 'onsite';
+      if (!c.logs) c.logs = [];
+    });
+    applyVisitTypeUI();
     renderAll();
     loadKakaoKey();
   })();
