@@ -167,6 +167,12 @@
   .map-legend span { display: inline-flex; align-items: center; gap: 6px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
+  .toggle-row {
+    display: flex; align-items: center; gap: 9px; margin-bottom: 14px;
+    font-size: 13px; color: var(--ink-soft); cursor: pointer; user-select: none;
+  }
+  .toggle-row input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--navy-line); }
+
   /* ---------------- Month panel ---------------- */
   .month-picker {
     display: flex; align-items: center; gap: 14px; margin-bottom: 20px;
@@ -374,6 +380,10 @@
         <h2>고객사 위치</h2>
         <span class="meta" id="mapMeta">0 SITES</span>
       </div>
+      <label class="toggle-row">
+        <input type="checkbox" id="hideCompletedToggle" />
+        <span>이번 달 점검 완료한 곳 숨기기</span>
+      </label>
       <div class="doc-card">
         <div id="map"></div>
         <div class="bl"></div><div class="br"></div>
@@ -693,11 +703,17 @@
     }).addTo(map);
     markersLayer = L.layerGroup().addTo(map);
   }
+  let hideCompletedOnMap = false;
+
   function renderMap() {
     markersLayer.clearLayers();
     const pts = [];
+    const now = new Date();
+    const curYear = now.getFullYear(), curMonth = now.getMonth();
+    let hiddenCount = 0;
     clients.forEach((c) => {
       if (c.lat == null || c.lng == null) return;
+      if (hideCompletedOnMap && isCompleted(c, curYear, curMonth)) { hiddenCount++; return; }
       pts.push([c.lat, c.lng]);
       const marker = L.circleMarker([c.lat, c.lng], {
         radius: 8, color: '#fff', weight: 2, fillColor: CYCLE_COLOR[c.cycle], fillOpacity: 1,
@@ -706,8 +722,13 @@
       marker.bindPopup(`<b>${escapeHtml(c.name)}</b><br>${escapeHtml(c.address)}<br>${CYCLE_LABEL[c.cycle]} 점검 · 다음: ${due}`);
     });
     if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
-    $('#mapMeta').textContent = `${pts.length} / ${clients.length} SITES MAPPED`;
+    const hiddenNote = hiddenCount ? ` (완료 ${hiddenCount}곳 숨김)` : '';
+    $('#mapMeta').textContent = `${pts.length} / ${clients.length} SITES MAPPED${hiddenNote}`;
   }
+  $('#hideCompletedToggle').addEventListener('change', (e) => {
+    hideCompletedOnMap = e.target.checked;
+    renderMap();
+  });
   function escapeHtml(s) {
     const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
   }
@@ -804,7 +825,12 @@
     $('#monthLabel').textContent = `${viewYear}년 ${viewMonth + 1}월`;
     const due = clients
       .filter((c) => isDueInMonth(c.nextInspection, c.cycle, viewYear, viewMonth))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => {
+        const da = isCompleted(a, viewYear, viewMonth) ? 1 : 0;
+        const db = isCompleted(b, viewYear, viewMonth) ? 1 : 0;
+        if (da !== db) return da - db;
+        return a.name.localeCompare(b.name);
+      });
     const doneCount = due.filter((c) => isCompleted(c, viewYear, viewMonth)).length;
     $('#monthMeta').textContent = `${doneCount} / ${due.length} 완료`;
 
