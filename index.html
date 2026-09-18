@@ -167,8 +167,22 @@
   .map-legend span { display: inline-flex; align-items: center; gap: 6px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
+  .map-controls {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .seg { display: inline-flex; border: 1px solid var(--line); background: #fff; }
+  .seg-btn {
+    appearance: none; border: none; background: none; cursor: pointer;
+    font-family: "Noto Sans KR", sans-serif; font-size: 12.5px; color: var(--ink-soft);
+    padding: 7px 16px; white-space: nowrap;
+  }
+  .seg-btn + .seg-btn { border-left: 1px solid var(--line); }
+  .seg-btn:hover:not(.active) { color: var(--ink); background: var(--paper-dim); }
+  .seg-btn.active { background: var(--navy); color: #F4F1E6; font-weight: 500; }
+
   .toggle-row {
-    display: flex; align-items: center; gap: 9px; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 9px;
     font-size: 13px; color: var(--ink-soft); cursor: pointer; user-select: none;
   }
   .toggle-row input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--navy-line); }
@@ -380,10 +394,16 @@
         <h2>고객사 위치</h2>
         <span class="meta" id="mapMeta">0 SITES</span>
       </div>
-      <label class="toggle-row">
-        <input type="checkbox" id="hideCompletedToggle" />
-        <span>이번 달 점검 완료한 곳 숨기기</span>
-      </label>
+      <div class="map-controls">
+        <div class="seg">
+          <button class="seg-btn active" data-scope="all">전체 보기</button>
+          <button class="seg-btn" data-scope="month">이번 달 점검</button>
+        </div>
+        <label class="toggle-row">
+          <input type="checkbox" id="hideCompletedToggle" />
+          <span>완료한 곳 숨기기</span>
+        </label>
+      </div>
       <div class="doc-card">
         <div id="map"></div>
         <div class="bl"></div><div class="br"></div>
@@ -704,6 +724,7 @@
     markersLayer = L.layerGroup().addTo(map);
   }
   let hideCompletedOnMap = false;
+  let mapScope = 'all'; // 'all' | 'month'
 
   function renderMap() {
     markersLayer.clearLayers();
@@ -711,7 +732,14 @@
     const now = new Date();
     const curYear = now.getFullYear(), curMonth = now.getMonth();
     let hiddenCount = 0;
-    clients.forEach((c) => {
+
+    // 범위에 해당하는 고객사 추리기
+    const inScope = clients.filter((c) => {
+      if (mapScope === 'month') return isDueInMonth(c.nextInspection, c.cycle, curYear, curMonth);
+      return true;
+    });
+
+    inScope.forEach((c) => {
       if (c.lat == null || c.lng == null) return;
       if (hideCompletedOnMap && isCompleted(c, curYear, curMonth)) { hiddenCount++; return; }
       pts.push([c.lat, c.lng]);
@@ -721,13 +749,27 @@
       const due = fmtDate(new Date(c.nextInspection));
       marker.bindPopup(`<b>${escapeHtml(c.name)}</b><br>${escapeHtml(c.address)}<br>${CYCLE_LABEL[c.cycle]} 점검 · 다음: ${due}`);
     });
+
     if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
-    const hiddenNote = hiddenCount ? ` (완료 ${hiddenCount}곳 숨김)` : '';
-    $('#mapMeta').textContent = `${pts.length} / ${clients.length} SITES MAPPED${hiddenNote}`;
+    else map.setView(KOREA_CENTER, 7);
+
+    const hiddenNote = hiddenCount ? ` · 완료 ${hiddenCount}곳 숨김` : '';
+    const scopeNote = mapScope === 'month' ? `${curMonth + 1}월 점검 ` : '';
+    $('#mapMeta').textContent = `${scopeNote}${pts.length} / ${inScope.length} SITES${hiddenNote}`;
   }
+
   $('#hideCompletedToggle').addEventListener('change', (e) => {
     hideCompletedOnMap = e.target.checked;
     renderMap();
+  });
+
+  document.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.seg-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      mapScope = btn.dataset.scope;
+      renderMap();
+    });
   });
   function escapeHtml(s) {
     const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
