@@ -181,6 +181,18 @@
   .seg-btn:hover:not(.active) { color: var(--ink); background: var(--paper-dim); }
   .seg-btn.active { background: var(--navy); color: #F4F1E6; font-weight: 500; }
 
+  .pin {
+    width: 20px; height: 20px; border-radius: 50%; border: 3px solid #fff;
+    box-shadow: 0 2px 7px rgba(10,24,38,0.4);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
+  }
+  .leaflet-popup-content-wrapper { border-radius: 2px; box-shadow: 0 6px 18px rgba(10,24,38,0.25); }
+  .leaflet-popup-content { font-family: "Noto Sans KR", sans-serif; font-size: 13px; line-height: 1.6; margin: 12px 16px; }
+  .popup-name { font-family: "Noto Serif KR", serif; font-weight: 700; font-size: 14.5px; }
+  .popup-meta { color: #5C665F; font-size: 12px; }
+  .popup-due { font-family: "IBM Plex Mono", monospace; font-size: 11.5px; margin-top: 4px; }
+
   .toggle-row {
     display: flex; align-items: center; gap: 9px;
     font-size: 13px; color: var(--ink-soft); cursor: pointer; user-select: none;
@@ -399,6 +411,11 @@
           <button class="seg-btn active" data-scope="all">전체 보기</button>
           <button class="seg-btn" data-scope="month">이번 달 점검</button>
         </div>
+        <div class="seg" title="지도 스타일">
+          <button class="seg-btn active" data-style="voyager">컬러</button>
+          <button class="seg-btn" data-style="light">심플</button>
+          <button class="seg-btn" data-style="dark">다크</button>
+        </div>
         <label class="toggle-row">
           <input type="checkbox" id="hideCompletedToggle" />
           <span>완료한 곳 숨기기</span>
@@ -538,7 +555,7 @@
   let clients = [];
   let editingId = null;
   let map, markersLayer;
-  let previewMap, previewMarker;
+  let previewMap, previewMarker, previewTiles;
   let previewCoords = null;
   let viewMonth = new Date().getMonth();
   let viewYear = new Date().getFullYear();
@@ -716,11 +733,29 @@
   });
 
   // ---------- main map ----------
+  const TILE_STYLES = {
+    voyager: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  };
+  let mapStyle = 'voyager';
+  let mapTiles = null;
+  function makeTiles(style) {
+    return L.tileLayer(TILE_STYLES[style] || TILE_STYLES.voyager, {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      subdomains: 'abcd', maxZoom: 20,
+    });
+  }
+  function setMapStyle(style) {
+    mapStyle = style;
+    if (map && mapTiles) { map.removeLayer(mapTiles); mapTiles = makeTiles(style).addTo(map); mapTiles.bringToBack(); }
+    if (previewMap && previewTiles) { previewMap.removeLayer(previewTiles); previewTiles = makeTiles(style).addTo(previewMap); }
+    document.querySelectorAll('.seg-btn[data-style]').forEach((b) => b.classList.toggle('active', b.dataset.style === style));
+    storeSet('mapStyle', style);
+  }
   function initMap() {
     map = L.map('map').setView(KOREA_CENTER, 7);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
-    }).addTo(map);
+    mapTiles = makeTiles(mapStyle).addTo(map);
     markersLayer = L.layerGroup().addTo(map);
   }
   let hideCompletedOnMap = false;
@@ -743,11 +778,15 @@
       if (c.lat == null || c.lng == null) return;
       if (hideCompletedOnMap && isCompleted(c, curYear, curMonth)) { hiddenCount++; return; }
       pts.push([c.lat, c.lng]);
-      const marker = L.circleMarker([c.lat, c.lng], {
-        radius: 8, color: '#fff', weight: 2, fillColor: CYCLE_COLOR[c.cycle], fillOpacity: 1,
-      }).addTo(markersLayer);
+      const done = isCompleted(c, curYear, curMonth);
+      const icon = L.divIcon({
+        className: '',
+        html: `<div class="pin" style="background:${done ? '#9AA39E' : CYCLE_COLOR[c.cycle]}">${done ? '✓' : ''}</div>`,
+        iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -12],
+      });
+      const marker = L.marker([c.lat, c.lng], { icon }).addTo(markersLayer);
       const due = fmtDate(new Date(c.nextInspection));
-      marker.bindPopup(`<b>${escapeHtml(c.name)}</b><br>${escapeHtml(c.address)}<br>${CYCLE_LABEL[c.cycle]} 점검 · 다음: ${due}`);
+      marker.bindPopup(`<div class="popup-name">${escapeHtml(c.name)}</div><div class="popup-meta">${escapeHtml(c.address)}</div><div class="popup-due">${CYCLE_LABEL[c.cycle]} 점검 · 다음 ${due}${done ? ' · 이번 달 완료' : ''}</div>`);
     });
 
     if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
@@ -763,9 +802,12 @@
     renderMap();
   });
 
-  document.querySelectorAll('.seg-btn').forEach((btn) => {
+  document.querySelectorAll('.seg-btn[data-style]').forEach((btn) => {
+    btn.addEventListener('click', () => setMapStyle(btn.dataset.style));
+  });
+  document.querySelectorAll('.seg-btn[data-scope]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.seg-btn').forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.seg-btn[data-scope]').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       mapScope = btn.dataset.scope;
       renderMap();
@@ -779,9 +821,7 @@
   function ensurePreviewMap(lat, lng) {
     if (!previewMap) {
       previewMap = L.map('previewMap').setView([lat, lng], 15);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
-      }).addTo(previewMap);
+      previewTiles = makeTiles(mapStyle).addTo(previewMap);
       previewMarker = L.marker([lat, lng], { draggable: true }).addTo(previewMap);
       previewMarker.on('dragend', () => {
         const p = previewMarker.getLatLng();
@@ -1131,6 +1171,8 @@
     applyVisitTypeUI();
     renderAll();
     loadKakaoKey();
+    const savedStyle = await storeGet('mapStyle');
+    if (savedStyle && TILE_STYLES[savedStyle] && savedStyle !== mapStyle) setMapStyle(savedStyle);
   })();
 })();
 </script>
