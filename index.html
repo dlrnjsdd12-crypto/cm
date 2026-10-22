@@ -187,6 +187,22 @@
     display: flex; align-items: center; justify-content: center;
     color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
   }
+  .pin-wrap { cursor: pointer; }
+  .kpopup-wrap { padding-bottom: 18px; }
+  .kpopup {
+    position: relative; background: #fff; border-radius: 2px; min-width: 190px;
+    padding: 12px 30px 12px 16px; box-shadow: 0 6px 18px rgba(10,24,38,0.28);
+    font-family: "Noto Sans KR", sans-serif; font-size: 13px; line-height: 1.6; color: var(--ink);
+  }
+  .kpopup-x {
+    position: absolute; top: 4px; right: 6px; border: none; background: none; cursor: pointer;
+    font-size: 18px; line-height: 1; color: var(--ink-soft); padding: 2px 4px;
+  }
+  .kpopup-x:hover { color: var(--ink); }
+  .map-notice {
+    font-size: 12.5px; color: var(--ink-soft); background: var(--paper-dim);
+    border: 1px dashed var(--line); padding: 9px 12px; margin-bottom: 12px;
+  }
   .leaflet-popup-content-wrapper { border-radius: 2px; box-shadow: 0 6px 18px rgba(10,24,38,0.25); }
   .leaflet-popup-content { font-family: "Noto Sans KR", sans-serif; font-size: 13px; line-height: 1.6; margin: 12px 16px; }
   .popup-name { font-family: "Noto Serif KR", serif; font-weight: 700; font-size: 14.5px; }
@@ -411,15 +427,18 @@
           <button class="seg-btn active" data-scope="all">전체 보기</button>
           <button class="seg-btn" data-scope="month">이번 달 점검</button>
         </div>
-        <div class="seg" title="지도 스타일">
-          <button class="seg-btn active" data-style="voyager">컬러</button>
-          <button class="seg-btn" data-style="light">심플</button>
-          <button class="seg-btn" data-style="dark">다크</button>
+        <div class="seg" id="styleSeg" title="지도 종류">
+          <button class="seg-btn active" data-style="roadmap">일반</button>
+          <button class="seg-btn" data-style="skyview">위성</button>
+          <button class="seg-btn" data-style="hybrid">하이브리드</button>
         </div>
         <label class="toggle-row">
           <input type="checkbox" id="hideCompletedToggle" />
           <span>완료한 곳 숨기기</span>
         </label>
+      </div>
+      <div class="map-notice" id="mapNotice" style="display:none;">
+        지금은 기본 지도예요. 「고객사 관리 → 지도 검색 설정」에 카카오 JavaScript 키를 등록하면 카카오맵으로 바뀌어요.
       </div>
       <div class="doc-card">
         <div id="map"></div>
@@ -555,7 +574,7 @@
   let clients = [];
   let editingId = null;
   let map, markersLayer;
-  let previewMap, previewMarker, previewTiles;
+  let previewMap, previewMarker, previewTiles, pKMap = null, pKMarker = null, previewKind = null;
   let previewCoords = null;
   let viewMonth = new Date().getMonth();
   let viewYear = new Date().getFullYear();
@@ -604,7 +623,7 @@
   }
   function markKakaoStatus(ok, customMsg) {
     const el = $('#kakaoStatus');
-    if (ok) { el.textContent = '카카오 지도 연결됨 — 자동 검색이 더 정확해져요.'; el.className = 'settings-status ok'; }
+    if (ok) { el.textContent = '카카오 지도 연결됨 — 카카오맵과 자동 검색이 적용돼요.'; el.className = 'settings-status ok'; }
     else { el.textContent = customMsg || '카카오 키가 등록되지 않았어요. 기본 검색으로 동작해요.'; el.className = 'settings-status warn'; }
   }
   function loadKakaoSDK(key) {
@@ -626,7 +645,8 @@
     if (!val) {
       kakaoKey = null; kakaoReady = false;
       await storeSet('kakaoKey', '');
-      markKakaoStatus(false, '키를 비웠어요. 기본 검색으로 동작해요.');
+      markKakaoStatus(false, '키를 비웠어요. 기본 검색, 기본 지도로 동작해요.');
+      rebuildMaps();
       return;
     }
     $('#saveKakaoKeyBtn').textContent = '확인 중...';
@@ -635,6 +655,7 @@
       kakaoKey = val;
       await storeSet('kakaoKey', val);
       markKakaoStatus(true);
+      rebuildMaps();
     } catch (e) {
       markKakaoStatus(false, '연결에 실패했어요. 키가 맞는지, 이 사이트 도메인이 카카오 디벨로퍼스에 등록되어 있는지 확인해 주세요.');
     }
@@ -728,80 +749,153 @@
       $$('.panel').forEach((p) => p.classList.remove('active'));
       btn.classList.add('active');
       $('#panel-' + btn.dataset.tab).classList.add('active');
-      if (btn.dataset.tab === 'map') setTimeout(() => map && map.invalidateSize(), 50);
+      if (btn.dataset.tab === 'map') setTimeout(refreshMainMap, 50);
     });
   });
 
-  // ---------- main map ----------
-  const TILE_STYLES = {
-    voyager: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  };
-  let mapStyle = 'voyager';
-  let mapTiles = null;
-  function makeTiles(style) {
-    return L.tileLayer(TILE_STYLES[style] || TILE_STYLES.voyager, {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-      subdomains: 'abcd', maxZoom: 20,
-    });
-  }
-  function setMapStyle(style) {
-    mapStyle = style;
-    if (map && mapTiles) { map.removeLayer(mapTiles); mapTiles = makeTiles(style).addTo(map); mapTiles.bringToBack(); }
-    if (previewMap && previewTiles) { previewMap.removeLayer(previewTiles); previewTiles = makeTiles(style).addTo(previewMap); }
-    document.querySelectorAll('.seg-btn[data-style]').forEach((b) => b.classList.toggle('active', b.dataset.style === style));
-    storeSet('mapStyle', style);
-  }
-  function initMap() {
-    map = L.map('map').setView(KOREA_CENTER, 7);
-    mapTiles = makeTiles(mapStyle).addTo(map);
-    markersLayer = L.layerGroup().addTo(map);
-  }
+  // ---------- main map (카카오맵 우선, 키가 없으면 기본 지도로 대체) ----------
+  const MAP_TYPES = ['roadmap', 'skyview', 'hybrid'];
+  let mapStyle = 'roadmap';
+  let mainKind = null;            // 'kakao' | 'leaflet'
+  let kmap = null, kOverlays = [], kPopup = null, lastKPts = [];
   let hideCompletedOnMap = false;
   let mapScope = 'all'; // 'all' | 'month'
 
+  function applyKakaoMapType(m, style) {
+    const T = kakao.maps.MapTypeId;
+    m.setMapTypeId(style === 'skyview' ? T.SKYVIEW : style === 'hybrid' ? T.HYBRID : T.ROADMAP);
+  }
+  function setMapStyle(style) {
+    mapStyle = style;
+    if (kmap) applyKakaoMapType(kmap, style);
+    if (pKMap) applyKakaoMapType(pKMap, style);
+    document.querySelectorAll('.seg-btn[data-style]').forEach((b) => b.classList.toggle('active', b.dataset.style === style));
+    storeSet('mapStyle', style);
+  }
+
+  function destroyMainMap() {
+    if (map) { map.remove(); map = null; markersLayer = null; }
+    kmap = null; kOverlays = []; kPopup = null; lastKPts = [];
+    $('#map').innerHTML = '';
+    mainKind = null;
+  }
+  function initMainMap() {
+    destroyMainMap();
+    if (kakaoReady) {
+      mainKind = 'kakao';
+      kmap = new kakao.maps.Map($('#map'), {
+        center: new kakao.maps.LatLng(KOREA_CENTER[0], KOREA_CENTER[1]), level: 13,
+      });
+      kmap.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.RIGHT);
+      applyKakaoMapType(kmap, mapStyle);
+      kakao.maps.event.addListener(kmap, 'click', closeKPopup);
+    } else {
+      mainKind = 'leaflet';
+      map = L.map('map').setView(KOREA_CENTER, 7);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
+      }).addTo(map);
+      markersLayer = L.layerGroup().addTo(map);
+    }
+    $('#styleSeg').style.display = mainKind === 'kakao' ? 'inline-flex' : 'none';
+    $('#mapNotice').style.display = mainKind === 'kakao' ? 'none' : 'block';
+  }
+  function refreshMainMap() {
+    if (mainKind === 'kakao' && kmap) { kmap.relayout(); fitKakao(); }
+    else if (mainKind === 'leaflet' && map) map.invalidateSize();
+  }
+  function rebuildMaps() {
+    initMainMap();
+    renderMap();
+    destroyPreviewMap();
+    if ($('#previewWrap').classList.contains('show') && previewCoords && previewCoords !== 'remote') {
+      setTimeout(() => ensurePreviewMap(previewCoords.lat, previewCoords.lng, true), 30);
+    }
+  }
+
+  function closeKPopup() { if (kPopup) { kPopup.setMap(null); kPopup = null; } }
+  function popupHtml(c, done) {
+    const due = fmtDate(new Date(c.nextInspection));
+    return `<div class="popup-name">${escapeHtml(c.name)}</div><div class="popup-meta">${escapeHtml(c.address)}</div><div class="popup-due">${CYCLE_LABEL[c.cycle]} 점검 · 다음 ${due}${done ? ' · 이번 달 완료' : ''}</div>`;
+  }
+  function openKPopup(c, pos, done) {
+    closeKPopup();
+    const el = document.createElement('div');
+    el.className = 'kpopup-wrap';
+    el.innerHTML = `<div class="kpopup"><button class="kpopup-x" type="button" aria-label="닫기">×</button>${popupHtml(c, done)}</div>`;
+    el.querySelector('.kpopup-x').addEventListener('click', closeKPopup);
+    kPopup = new kakao.maps.CustomOverlay({ position: pos, content: el, xAnchor: 0.5, yAnchor: 1, clickable: true, zIndex: 20 });
+    kPopup.setMap(kmap);
+  }
+  function fitKakao() {
+    if (!kmap) return;
+    if (!lastKPts.length) { kmap.setCenter(new kakao.maps.LatLng(KOREA_CENTER[0], KOREA_CENTER[1])); kmap.setLevel(13); return; }
+    if (lastKPts.length === 1) { kmap.setCenter(lastKPts[0]); kmap.setLevel(5); return; }
+    const bounds = new kakao.maps.LatLngBounds();
+    lastKPts.forEach((p) => bounds.extend(p));
+    kmap.setBounds(bounds, 60, 60, 60, 60);
+  }
+
   function renderMap() {
-    markersLayer.clearLayers();
-    const pts = [];
+    if (!mainKind) return;
     const now = new Date();
     const curYear = now.getFullYear(), curMonth = now.getMonth();
     let hiddenCount = 0;
 
-    // 범위에 해당하는 고객사 추리기
     const inScope = clients.filter((c) => {
       if (mapScope === 'month') return isDueInMonth(c.nextInspection, c.cycle, curYear, curMonth);
       return true;
     });
-
+    const visible = [];
     inScope.forEach((c) => {
       if (c.lat == null || c.lng == null) return;
       if (hideCompletedOnMap && isCompleted(c, curYear, curMonth)) { hiddenCount++; return; }
-      pts.push([c.lat, c.lng]);
-      const done = isCompleted(c, curYear, curMonth);
-      const icon = L.divIcon({
-        className: '',
-        html: `<div class="pin" style="background:${done ? '#9AA39E' : CYCLE_COLOR[c.cycle]}">${done ? '✓' : ''}</div>`,
-        iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -12],
-      });
-      const marker = L.marker([c.lat, c.lng], { icon }).addTo(markersLayer);
-      const due = fmtDate(new Date(c.nextInspection));
-      marker.bindPopup(`<div class="popup-name">${escapeHtml(c.name)}</div><div class="popup-meta">${escapeHtml(c.address)}</div><div class="popup-due">${CYCLE_LABEL[c.cycle]} 점검 · 다음 ${due}${done ? ' · 이번 달 완료' : ''}</div>`);
+      visible.push(c);
     });
 
-    if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
-    else map.setView(KOREA_CENTER, 7);
+    if (mainKind === 'kakao') {
+      closeKPopup();
+      kOverlays.forEach((o) => o.setMap(null));
+      kOverlays = []; lastKPts = [];
+      visible.forEach((c) => {
+        const pos = new kakao.maps.LatLng(c.lat, c.lng);
+        lastKPts.push(pos);
+        const done = isCompleted(c, curYear, curMonth);
+        const el = document.createElement('div');
+        el.className = 'pin-wrap';
+        el.innerHTML = `<div class="pin" style="background:${done ? '#9AA39E' : CYCLE_COLOR[c.cycle]}">${done ? '✓' : ''}</div>`;
+        el.addEventListener('click', () => openKPopup(c, pos, done));
+        const ov = new kakao.maps.CustomOverlay({ position: pos, content: el, xAnchor: 0.5, yAnchor: 0.5, clickable: true, zIndex: 5 });
+        ov.setMap(kmap);
+        kOverlays.push(ov);
+      });
+      fitKakao();
+    } else {
+      markersLayer.clearLayers();
+      const pts = [];
+      visible.forEach((c) => {
+        pts.push([c.lat, c.lng]);
+        const done = isCompleted(c, curYear, curMonth);
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="pin" style="background:${done ? '#9AA39E' : CYCLE_COLOR[c.cycle]}">${done ? '✓' : ''}</div>`,
+          iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -12],
+        });
+        L.marker([c.lat, c.lng], { icon }).addTo(markersLayer).bindPopup(popupHtml(c, done));
+      });
+      if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
+      else map.setView(KOREA_CENTER, 7);
+    }
 
     const hiddenNote = hiddenCount ? ` · 완료 ${hiddenCount}곳 숨김` : '';
     const scopeNote = mapScope === 'month' ? `${curMonth + 1}월 점검 ` : '';
-    $('#mapMeta').textContent = `${scopeNote}${pts.length} / ${inScope.length} SITES${hiddenNote}`;
+    $('#mapMeta').textContent = `${scopeNote}${visible.length} / ${inScope.length} SITES${hiddenNote}`;
   }
 
   $('#hideCompletedToggle').addEventListener('change', (e) => {
     hideCompletedOnMap = e.target.checked;
     renderMap();
   });
-
   document.querySelectorAll('.seg-btn[data-style]').forEach((btn) => {
     btn.addEventListener('click', () => setMapStyle(btn.dataset.style));
   });
@@ -818,18 +912,61 @@
   }
 
   // ---------- preview map (location confirm) ----------
-  function ensurePreviewMap(lat, lng) {
+  function destroyPreviewMap() {
+    if (previewMap) { previewMap.remove(); previewMap = null; previewMarker = null; previewTiles = null; }
+    pKMap = null; pKMarker = null; previewKind = null;
+    $('#previewMap').innerHTML = '';
+  }
+  function setPreviewCoords(lat, lng) {
+    previewCoords = { lat, lng };
+    $('#submitBtn').disabled = false;
+  }
+  function ensurePreviewMap(lat, lng, found) {
+    const wantKind = kakaoReady ? 'kakao' : 'leaflet';
+    if (previewKind && previewKind !== wantKind) destroyPreviewMap();
+
+    if (wantKind === 'kakao') {
+      const pos = new kakao.maps.LatLng(lat, lng);
+      if (!pKMap) {
+        previewKind = 'kakao';
+        pKMap = new kakao.maps.Map($('#previewMap'), { center: pos, level: found ? 3 : 13 });
+        pKMap.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.RIGHT);
+        applyKakaoMapType(pKMap, mapStyle);
+        pKMarker = new kakao.maps.Marker({ position: pos, draggable: true, map: pKMap });
+        kakao.maps.event.addListener(pKMarker, 'dragend', () => {
+          const p = pKMarker.getPosition();
+          setPreviewCoords(p.getLat(), p.getLng());
+        });
+        kakao.maps.event.addListener(pKMap, 'click', (e) => {
+          pKMarker.setPosition(e.latLng);
+          setPreviewCoords(e.latLng.getLat(), e.latLng.getLng());
+        });
+      } else {
+        pKMap.relayout();
+        pKMap.setCenter(pos);
+        pKMap.setLevel(found ? 3 : 13);
+        pKMarker.setPosition(pos);
+      }
+      return;
+    }
+
     if (!previewMap) {
-      previewMap = L.map('previewMap').setView([lat, lng], 15);
-      previewTiles = makeTiles(mapStyle).addTo(previewMap);
+      previewKind = 'leaflet';
+      previewMap = L.map('previewMap').setView([lat, lng], found ? 16 : 7);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
+      }).addTo(previewMap);
       previewMarker = L.marker([lat, lng], { draggable: true }).addTo(previewMap);
       previewMarker.on('dragend', () => {
         const p = previewMarker.getLatLng();
-        previewCoords = { lat: p.lat, lng: p.lng };
-        $('#submitBtn').disabled = false;
+        setPreviewCoords(p.lat, p.lng);
+      });
+      previewMap.on('click', (e) => {
+        previewMarker.setLatLng(e.latlng);
+        setPreviewCoords(e.latlng.lat, e.latlng.lng);
       });
     } else {
-      previewMap.setView([lat, lng], 15);
+      previewMap.setView([lat, lng], found ? 16 : 7);
       previewMarker.setLatLng([lat, lng]);
       setTimeout(() => previewMap.invalidateSize(), 50);
     }
@@ -850,12 +987,11 @@
     const finalCoords = coords || { lat: KOREA_CENTER[0], lng: KOREA_CENTER[1] };
     previewCoords = finalCoords;
 
-    setTimeout(() => ensurePreviewMap(finalCoords.lat, finalCoords.lng), 30);
+    setTimeout(() => ensurePreviewMap(finalCoords.lat, finalCoords.lng, matched), 30);
 
     if (matched) {
       status.textContent = '위치를 찾았어요. 정확한지 확인하고, 다르면 핀을 드래그해서 옮겨 주세요.';
       status.className = 'preview-status ok';
-      if (!previewMap) setTimeout(() => previewMap && previewMap.setZoom(16), 100);
     } else {
       status.textContent = '정확한 위치를 찾지 못했어요. 지도를 이동하고 핀을 드래그해서 직접 지정해 주세요.';
       status.className = 'preview-status warn';
@@ -1086,7 +1222,7 @@
       $('#previewWrap').classList.add('show');
       $('#previewStatus').textContent = '등록된 위치입니다. 필요하면 핀을 옮겨 조정하세요.';
       $('#previewStatus').className = 'preview-status ok';
-      setTimeout(() => ensurePreviewMap(c.lat, c.lng), 30);
+      setTimeout(() => ensurePreviewMap(c.lat, c.lng, true), 30);
     } else {
       previewCoords = null;
       $('#previewWrap').classList.remove('show');
@@ -1160,7 +1296,6 @@
 
   // ---------- init ----------
   (async function init() {
-    initMap();
     await loadClients();
     clients.forEach((c) => {
       if (!c.nextInspection) c.nextInspection = toInputDate(nextDueDate(c.lastInspection, c.cycle));
@@ -1169,10 +1304,17 @@
       if (!c.completedMonths) c.completedMonths = [];
     });
     applyVisitTypeUI();
-    renderAll();
-    loadKakaoKey();
+
     const savedStyle = await storeGet('mapStyle');
-    if (savedStyle && TILE_STYLES[savedStyle] && savedStyle !== mapStyle) setMapStyle(savedStyle);
+    if (savedStyle && MAP_TYPES.includes(savedStyle)) mapStyle = savedStyle;
+    document.querySelectorAll('.seg-btn[data-style]').forEach((b) => b.classList.toggle('active', b.dataset.style === mapStyle));
+
+    // 카카오 SDK를 잠깐 기다렸다가(최대 5초) 지도를 만든다
+    const kakaoLoading = loadKakaoKey();
+    await Promise.race([kakaoLoading, new Promise((r) => setTimeout(r, 5000))]);
+    initMainMap();
+    renderAll();
+    kakaoLoading.then(() => { if (kakaoReady && mainKind !== 'kakao') rebuildMaps(); });
   })();
 })();
 </script>
